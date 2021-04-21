@@ -9,101 +9,113 @@ import (
 )
 
 const LowWord = 2
-const HiWord = 5
+const HiWord = 10
+const Printables = " !#$%&()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+const PrintablesCount = len(Printables)
 
 type Script struct {
 	Buf []byte
 }
 
+func splitSized(buf []byte, lim int) [][]byte {
+	var chunk []byte
+	chunks := make([][]byte, 0, len(buf)/lim+1)
+	for len(buf) >= lim {
+		chunk, buf = buf[:lim], buf[lim:]
+		chunks = append(chunks, chunk)
+	}
+	if len(buf) > 0 {
+		chunks = append(chunks, buf[:len(buf)])
+	}
+	return chunks
+}
+
 // TODO(stgleb): Use better pattern matching algorithm
 // Creates a dictionary of the given word length and counts occurrences.
 func dict(buf []byte, wlen int) map[string]int {
-
 	dict := map[string]int{}
 
-	l := len(buf)
+	for offset := 0; offset < wlen; offset++ {
+		chunks := splitSized(buf, wlen)
+		l := len(chunks)
+		for i := 0; i < l; i++ {
+			s := string(chunks[i])
 
-	for i := 0; i+wlen < l; i++ {
-		s := string(buf[i : i+wlen])
-		if _, ok := dict[s]; ok == false {
-			dict[s] = 0
-		} else {
-			dict[s] = dict[s] + 1
+			if _, ok := dict[s]; ok == false {
+				dict[s] = 0
+			}
+			dict[s]++
 		}
 	}
+
+	//l := len(buf)
+	//for i := 0; i+wlen < l; i++ {
+	//	s := string(buf[i : i+wlen])
+	//	if _, ok := dict[s]; ok == false {
+	//		dict[s] = 0
+	//	}
+	//	dict[s]++
+	//}
 
 	return dict
 }
 
-// Returns the first unused byte, we need it to store a chunk.
-func getFirstUnusedByte(used map[byte]bool) (byte, error) {
+// Returns the first unused printable byte, we need it to store a chunk.
+func firstUnusedPrintable(buf []byte, used map[byte]bool) (ret byte, err error) {
 	var c byte
-	for i := byte(126); i > byte(0); i-- {
-		switch i {
-		case
-			// Non-printable bytes.
-			byte(10),
-			byte(13),
-			byte(34),
-			byte(39),
-			byte(92):
-		default:
-			c = i
-			if !used[c] {
-				used[c] = true
-				return c, nil
-			}
+	printableBytes := []byte(Printables)
+	for i:=0; i < PrintablesCount; i++ {
+		c = printableBytes[i]
+		if ((-1 == bytes.IndexByte(buf, c)) && !used[c]) {
+			return c, nil
 		}
 	}
-	return byte(0), errors.New("No more unused bytes\n")
+
+	return byte(0), errors.New("Free printable not found\n")
 }
 
-// Compresses a buffer into a chunk and chunk keys.
-func Compress(buf []byte) ([]byte, []byte, error) {
+
+func Implode(buf []byte) ([]byte, []byte, error) {
 	used := make(map[byte]bool)
 	keys := []byte{}
-	mv := -1
+	ret  := []byte{}
 
 	for {
-		t, err := getFirstUnusedByte(used)
-
+		key, err := firstUnusedPrintable(buf, used)
 		if err != nil {
 			break
 		}
 
-		mk := ""
+		chosenPiece := ""
+		chosenPieceWeight := 0
 
+		// search for best piece
 		for i := LowWord; i < HiWord; i++ {
 			d := dict(buf, i)
-
-			for k, v := range d {
-				if v > 1 {
-					// Calculating length.
-					tlen := len(buf) - v*len(k) + v
-					slen := tlen + len(k) + len(keys) + 2
-
-					if slen < mv || mv < 0 {
-						if tlen < len(buf) {
-							mk = k
-							mv = slen
-						}
-					}
+			for piece, count := range d {
+				if chosenPieceWeight < i * count {
+					chosenPiece = piece
+					chosenPieceWeight = i * count
 				}
 			}
 		}
 
-		if mk != "" {
-			buf = bytes.Replace(buf, []byte(mk), []byte{t}, -1)
-			buf = append(buf, t)
-			buf = append(buf, []byte(mk)...)
-			keys = append([]byte{t}, keys...)
-		} else {
+		if chosenPiece == "" {
 			break
 		}
+
+		used[key] = true
+		buf = bytes.Replace(buf, []byte(chosenPiece), []byte{key}, -1)
+		buf = append(buf, key)
+		buf = append(buf, []byte(chosenPiece)...)
+		keys = append([]byte{key}, keys...)
 	}
 
-	return buf, keys, nil
+	ret = append(buf, []byte(ret)...)
+
+	return ret, keys, nil
 }
+
 
 // Uses buf and key to create the javascript decompressor.
 func Pack(buf []byte, keys []byte) string {
@@ -124,7 +136,8 @@ func Minify(data []byte) ([]byte, error) {
 
 func Obfuscate(data []byte) (string, error) {
 	buf, err := Minify(data)
-	t, k, err := Compress(buf)
+
+	t, k, err := Implode(buf)
 
 	if err != nil {
 		return "", err
